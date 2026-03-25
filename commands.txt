@@ -1,0 +1,46 @@
+YtbSongTracker Command Reference
+
+Workspace:
+D:\Projects\YtbSongTracker
+
+Start backend:
+npm start
+
+Run syntax checks:
+npm run check
+
+Train classifier from current stored labels:
+npm run train:classifier
+
+Seed candidate pool from existing listen history:
+npm run label:backfill
+
+Generate a labeling batch from pending candidates:
+npm run label:batch -- --limit 20
+
+Generate a labeling batch with a custom batch id/file name:
+npm run label:batch -- --limit 20 --batchId batch-005
+
+Import a labeled batch and retrain:
+npm run label:import -- --file D:\Projects\YtbSongTracker\data\batch-005.json
+
+Import a labeled batch without retraining:
+npm run label:import -- --file D:\Projects\YtbSongTracker\data\batch-005.json --train false
+
+Rate-test Spotify/backend flow:
+npm run rate-test -- --rps 2 --duration 30
+
+Useful API endpoints:
+GET http://localhost:3000/health
+GET http://localhost:3000/api/classifier/status
+GET http://localhost:3000/api/classifier/labels?limit=50
+GET http://localhost:3000/api/classifier/candidates?status=pending_label&limit=50
+POST http://localhost:3000/api/classifier/train
+POST http://localhost:3000/api/classifier/batches/next
+
+Recommended workflow:
+1. npm start
+2. Browse YouTube with the reloaded extension
+3. npm run label:batch -- --limit 20
+4. Label the generated JSON with song, video, or uncertain
+5. npm run label:import -- --file D:\Projects\YtbSongTracker\data\your-batch-file.json

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ytb Song Tracker Settings</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main class="page">
+      <section class="card">
+        <h1>Ytb Song Tracker</h1>
+        <p class="lede">Configure where the extension sends your YouTube listen events.</p>
+
+        <form id="settings-form">
+          <label class="field">
+            <span>Backend endpoint</span>
+            <input id="backendUrl" name="backendUrl" type="url" placeholder="http://localhost:3000/api/listens/youtube">
+          </label>
+
+          <label class="field">
+            <span>Bearer token (optional)</span>
+            <input id="apiKey" name="apiKey" type="password" placeholder="Paste a private API key">
+          </label>
+
+          <label class="field">
+            <span>Minimum listened seconds</span>
+            <input id="listenThresholdSec" name="listenThresholdSec" type="number" min="5" max="600" step="1">
+          </label>
+
+          <label class="field">
+            <span>Minimum completion percent</span>
+            <input id="minProgressPercent" name="minProgressPercent" type="number" min="0.1" max="1" step="0.05">
+          </label>
+
+          <label class="checkbox">
+            <input id="debug" name="debug" type="checkbox">
+            <span>Enable debug logging in the page console</span>
+          </label>
+
+          <div class="actions">
+            <button type="submit">Save settings</button>
+          </div>
+          <p id="status" class="status" aria-live="polite"></p>
+        </form>
+      </section>
+    </main>
+
+    <script src="options.js"></script>
+  </body>
+</html>

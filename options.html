@@ -8,42 +8,221 @@
   </head>
   <body>
     <main class="page">
-      <section class="card">
-        <h1>Ytb Song Tracker</h1>
-        <p class="lede">Configure where the extension sends your YouTube listen events.</p>
-
-        <form id="settings-form">
-          <label class="field">
-            <span>Backend endpoint</span>
-            <input id="backendUrl" name="backendUrl" type="url" placeholder="http://localhost:3000/api/listens/youtube">
-          </label>
-
-          <label class="field">
-            <span>Bearer token (optional)</span>
-            <input id="apiKey" name="apiKey" type="password" placeholder="Paste a private API key">
-          </label>
-
-          <label class="field">
-            <span>Minimum listened seconds</span>
-            <input id="listenThresholdSec" name="listenThresholdSec" type="number" min="5" max="600" step="1">
-          </label>
-
-          <label class="field">
-            <span>Minimum completion percent</span>
-            <input id="minProgressPercent" name="minProgressPercent" type="number" min="0.1" max="1" step="0.05">
-          </label>
-
-          <label class="checkbox">
-            <input id="debug" name="debug" type="checkbox">
-            <span>Enable debug logging in the page console</span>
-          </label>
-
-          <div class="actions">
-            <button type="submit">Save settings</button>
+      <div class="app-shell">
+        <aside class="sidebar card">
+          <div class="sidebar-brand">
+            <p class="eyebrow">Extension workspace</p>
+            <h1>Ytb Song Tracker</h1>
+            <p class="sidebar-copy">Track your listening history, review classifications, and tune the extension from one place.</p>
           </div>
-          <p id="status" class="status" aria-live="polite"></p>
-        </form>
-      </section>
+
+          <nav class="sidebar-nav" aria-label="Options sections">
+            <button id="tabDashboard" type="button" class="tab-button is-active" data-tab="dashboard">Dashboard</button>
+            <button id="tabAbout" type="button" class="tab-button" data-tab="about">About</button>
+            <button id="tabImport" type="button" class="tab-button" data-tab="import">Import</button>
+            <button id="tabSettings" type="button" class="tab-button" data-tab="settings">Settings</button>
+          </nav>
+        </aside>
+
+        <section class="content-pane">
+          <section id="dashboardPanel" class="tab-panel">
+            <section class="card stats-card">
+              <div class="stats-header">
+                <div>
+                  <h2>Monthly top songs</h2>
+                  <p class="lede stats-lede">Your most-listened songs across tracked sources for the selected month.</p>
+                </div>
+                <div class="stats-controls">
+                  <label class="month-filter">
+                    <span>Month</span>
+                    <input id="statsMonth" type="month">
+                  </label>
+                  <button id="refreshStats" type="button" class="secondary-button">Refresh stats</button>
+                </div>
+              </div>
+
+              <div class="stats-summary" id="statsSummary" aria-live="polite">
+                <article class="summary-tile">
+                  <span class="summary-label">Top songs listed</span>
+                  <strong id="trackedSongsValue">-</strong>
+                </article>
+                <article class="summary-tile">
+                  <span class="summary-label">Tracked plays</span>
+                  <strong id="totalPlaysValue">-</strong>
+                </article>
+                <article class="summary-tile">
+                  <span class="summary-label">Listening time</span>
+                  <strong id="listeningTimeValue">-</strong>
+                </article>
+              </div>
+
+              <div id="sourceBreakdown" class="source-breakdown"></div>
+              <p id="statsStatus" class="status stats-status" aria-live="polite"></p>
+              <div class="history-actions">
+                <button id="toggleCorrectionMode" type="button" class="secondary-button">Enable correction mode</button>
+              </div>
+              <div class="songs-table">
+                <div class="songs-table-head">
+                  <span>Rank</span>
+                  <span>Title</span>
+                  <span>Artist</span>
+                  <span>Plays</span>
+                  <span>Listened</span>
+                  <span>Last played</span>
+                  <span class="action-column" hidden>Action</span>
+                </div>
+                <div id="topSongsList" class="songs-table-body"></div>
+              </div>
+              <div class="history-actions">
+                <button id="toggleMoreSongs" type="button" class="secondary-button">Show more songs</button>
+              </div>
+              <section id="moreSongsSection" hidden>
+                <div id="moreSongsList" class="songs-table-body more-songs-list"></div>
+              </section>
+              <div class="history-actions">
+                <button id="toggleHistory" type="button" class="secondary-button">Show full history</button>
+              </div>
+              <section id="historySection" class="history-section" hidden>
+                <div class="history-header">
+                  <div>
+                    <h3>Full History</h3>
+                    <p class="history-copy">Classified videos sorted by listen frequency.</p>
+                  </div>
+                </div>
+                <p id="historyStatus" class="status" aria-live="polite"></p>
+                <ol id="historyList" class="history-list"></ol>
+              </section>
+            </section>
+          </section>
+
+          <section id="aboutPanel" class="tab-panel" hidden>
+            <section class="card about-card">
+              <h2>What This Extension Does</h2>
+              <p class="lede">Ytb Song Tracker helps you build a personal listening history from YouTube and YouTube Music, then turns that history into stats you can actually browse.</p>
+
+              <div class="about-grid">
+                <article class="about-block">
+                  <h3>Purpose</h3>
+                  <p>It is designed to answer simple personal questions like what songs you played most this month, what videos were misclassified, and how your listening changed over time.</p>
+                </article>
+                <article class="about-block">
+                  <h3>What Data Is Stored</h3>
+                  <p>The extension stores local listen records such as title, identified artist when available, source type, listened time, playback date, and classification result.</p>
+                </article>
+                <article class="about-block">
+                  <h3>Where It Lives</h3>
+                  <p>Your listen history and stats are stored locally in the extension. An optional backend can help with Spotify lookup caching and metadata enrichment, but it is not the primary source of truth for your personal history.</p>
+                </article>
+                <article class="about-block">
+                  <h3>How Songs Are Counted</h3>
+                  <p>A listen is counted once playback crosses your configured threshold. After that, the same playback session can continue updating the listened time while you keep watching or listening.</p>
+                </article>
+              </div>
+
+              <div class="about-list">
+                <h3>Current dashboard sections</h3>
+                <ul>
+                  <li>Monthly top songs</li>
+                  <li>Expanded song rankings beyond the top 30</li>
+                  <li>Full history for non-song items</li>
+                  <li>Manual correction tools for song/video classification</li>
+                  <li>Imported listened-history support for JSON files such as Spotify exports</li>
+                </ul>
+              </div>
+            </section>
+          </section>
+
+          <section id="settingsPanel" class="tab-panel" hidden>
+            <section class="card">
+              <h2>Settings</h2>
+              <p class="lede">Configure thresholds and optional metadata-backend behavior while the product is still in development.</p>
+
+              <form id="settings-form">
+                <label class="field">
+                  <span>Metadata backend endpoint (optional)</span>
+                  <input id="backendUrl" name="backendUrl" type="url" placeholder="http://localhost:3000/api/enrich/listen">
+                </label>
+
+                <label class="field">
+                  <span>Private sync endpoint for your own listens (optional)</span>
+                  <input id="syncBackendUrl" name="syncBackendUrl" type="url" placeholder="http://localhost:3000/api/me/listens">
+                </label>
+
+                <label class="field">
+                  <span>Bearer token (optional)</span>
+                  <input id="apiKey" name="apiKey" type="password" placeholder="Paste a private API key">
+                </label>
+
+                <label class="field">
+                  <span>Minimum listened seconds</span>
+                  <input id="listenThresholdSec" name="listenThresholdSec" type="number" min="5" max="600" step="1">
+                </label>
+
+                <label class="field">
+                  <span>Minimum completion percent</span>
+                  <input id="minProgressPercent" name="minProgressPercent" type="number" min="0.1" max="1" step="0.05">
+                </label>
+
+                <label class="checkbox">
+                  <input id="debug" name="debug" type="checkbox">
+                  <span>Enable debug logging in the page console</span>
+                </label>
+
+                <div class="actions">
+                  <button type="submit">Save settings</button>
+                </div>
+                <p id="status" class="status" aria-live="polite"></p>
+              </form>
+            </section>
+          </section>
+
+          <section id="importPanel" class="tab-panel" hidden>
+            <section class="card">
+              <h2>Import History</h2>
+              <p class="lede">Bring your Spotify listening history into the tracker by downloading your export as JSON, then importing it here.</p>
+
+              <div class="about-grid import-guide-grid">
+                <article class="about-block">
+                  <h3>1. Request Your Spotify Data</h3>
+                  <p>Open Spotify privacy settings and request your account data export. Spotify will email you a downloadable archive when it is ready.</p>
+                  <p><a class="history-source" href="https://www.spotify.com/us/account/privacy/" target="_blank" rel="noreferrer">Open Spotify privacy settings</a></p>
+                </article>
+                <article class="about-block">
+                  <h3>2. Find the JSON Files</h3>
+                  <p>After downloading the archive, unzip it and look for streaming-history JSON files. The extension supports common Spotify export shapes from both legacy and extended history exports.</p>
+                </article>
+                <article class="about-block">
+                  <h3>3. Import Into The Extension</h3>
+                  <p>Choose one JSON file below and import it. You can repeat this for multiple Spotify files if your export includes more than one history file.</p>
+                </article>
+                <article class="about-block">
+                  <h3>Supported Spotify Fields</h3>
+                  <p>Legacy exports often include <code>endTime</code>, <code>artistName</code>, <code>trackName</code>, and <code>msPlayed</code>. Extended exports often include <code>ts</code>, <code>master_metadata_track_name</code>, <code>master_metadata_album_artist_name</code>, and <code>ms_played</code>.</p>
+                </article>
+              </div>
+
+              <section class="import-panel">
+                <div class="import-copy">
+                  <h3>Import listened history</h3>
+                  <p>Upload a Spotify JSON history file to merge it into your local tracker history.</p>
+                </div>
+
+                <form id="import-form" class="import-form">
+                  <label class="field">
+                    <span>History JSON file</span>
+                    <input id="importFile" type="file" accept=".json,application/json">
+                  </label>
+
+                  <div class="actions import-actions">
+                    <button id="importButton" type="submit">Import listened history</button>
+                  </div>
+                  <p id="importStatus" class="status" aria-live="polite"></p>
+                </form>
+              </section>
+            </section>
+          </section>
+        </section>
+      </div>
     </main>
 
     <script src="options.js"></script>

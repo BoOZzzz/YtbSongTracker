@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ytb Song Tracker</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="popup">
+      <header class="popup-header">
+        <div>
+          <p class="eyebrow">This month</p>
+          <h1>Top 10 songs</h1>
+        </div>
+        <button id="openOptions" type="button" class="ghost-button">Open dashboard</button>
+      </header>
+
+      <p id="popupStatus" class="popup-status" aria-live="polite"></p>
+      <section class="popup-table" aria-label="Top songs this month">
+        <div class="popup-table-head">
+          <span>Rank</span>
+          <span>Title</span>
+          <span>Artist</span>
+          <span>Plays</span>
+        </div>
+        <ol id="popupTopSongs" class="popup-table-body"></ol>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

@@ -1,20 +1,23 @@
 ﻿# Ytb Song Tracker Extension
 
-Private Chrome extension that watches `youtube.com` and `music.youtube.com`, counts a listen once playback passes your threshold, and posts the event to your backend so your site can update from your own database.
+Private Chrome extension that watches `youtube.com` and `music.youtube.com`, counts a listen once playback passes your threshold, and stores the user's listen history locally inside the extension.
 
-This folder now also includes a minimal local backend that stores events in JSON and exposes a basic top-songs API.
+This folder also includes a minimal optional local backend that can cache Spotify verification lookups and support classifier tooling while you are still developing with `localhost`.
 It also now includes an optional lightweight metadata classifier you can train from your own labeled examples.
 
 ## What this MVP does
 
 - Tracks YouTube and YouTube Music playback in the browser.
+- Stores listen history locally in the extension with IndexedDB.
+- Computes monthly top-song stats from local listen history.
+- Imports external listen-history JSON files such as Spotify exports.
 - Collects classifier candidate metadata when you land on a YouTube video page.
 - Waits until a video is meaningfully listened to before counting it.
 - Extracts the raw video title and channel name.
 - Normalizes likely song title and artist values with a lightweight parser.
 - Optionally trains a small local classifier on title, channel, description, and parser-derived signals.
-- Sends a JSON event to your backend endpoint.
-- Queues failed deliveries in local extension storage for debugging.
+- Optionally enriches track identity via a backend lookup/cache endpoint.
+- Queues failed backend-only requests in local extension storage for debugging.
 
 ## Files
 
@@ -22,6 +25,7 @@ It also now includes an optional lightweight metadata classifier you can train f
 - `content.js`: Runs on YouTube pages and detects listen milestones.
 - `background.js`: Receives listen events and posts them to your backend.
 - `parser.js`: Shared lightweight title/channel parser.
+- `tracker-storage.js`: Local IndexedDB storage and stats helpers used by the extension.
 - `classifier.js`: Local feature extraction, training, and inference utilities.
 - `scripts/train-classifier.js`: CLI entry point to train the classifier from labeled examples.
 - `scripts/generate-label-batch.js`: Exports a batch of unlabeled browser-collected candidates.
@@ -35,7 +39,7 @@ It also now includes an optional lightweight metadata classifier you can train f
 3. Turn on **Developer mode**.
 4. Click **Load unpacked**.
 5. Select this folder: `D:\Projects\YtbSongTracker`.
-6. Open the extension options page and set your backend URL.
+6. Open the extension options page and configure the optional backend URLs you want to use.
 
 After changing any extension file, reload the unpacked extension in `chrome://extensions` or `edge://extensions` before testing again.
 
@@ -45,7 +49,8 @@ After changing any extension file, reload the unpacked extension in `chrome://ex
 2. Set Spotify credentials if you want search verification
 3. Run `npm start`
 4. The backend will start on `http://localhost:3000`
-5. Set the extension `Backend endpoint` to `http://localhost:3000/api/listens/youtube`
+5. Set the extension `Metadata backend endpoint` to `http://localhost:3000/api/enrich/listen`
+6. If you want your own listens persisted for your personal website, also set `Private sync endpoint for your own listens` to `http://localhost:3000/api/me/listens`
 
 Optional auth:
 
@@ -80,7 +85,8 @@ npm start
 
 ## Suggested settings
 
-- `Backend endpoint`: `http://localhost:3000/api/listens/youtube`
+- `Metadata backend endpoint`: `http://localhost:3000/api/enrich/listen`
+- `Private sync endpoint for your own listens`: `http://localhost:3000/api/me/listens`
 - `Minimum listened seconds`: `30`
 - `Minimum completion percent`: `0.5`
 
@@ -115,9 +121,13 @@ The background worker posts JSON like this:
 ## Backend endpoints
 
 - `GET /health`
-- `POST /api/listens/youtube`
-- `GET /api/listens?limit=20`
-- `GET /api/stats/top-songs?limit=10&minConfidence=0.55`
+- `POST /api/enrich/listen`
+- `POST /api/me/listens`
+- `POST /api/listens/youtube` (legacy alias for the private sync route)
+- `GET /api/listens?limit=20` (private)
+- `GET /api/stats/top-songs?limit=30&minConfidence=0.55&month=2026-03` (private)
+- `GET /api/public/top-songs?limit=30&minConfidence=0.55&month=2026-03`
+- `POST /api/import/listens`
 - `GET /api/spotify/search?title=Love%20Song&artist=L4WUDU`
 - `GET /api/classifier/status`
 - `GET /api/classifier/labels?limit=50`
@@ -127,15 +137,35 @@ The background worker posts JSON like this:
 - `POST /api/classifier/batches/next`
 - `POST /api/classifier/candidates/collect`
 
-Stored events are written to [listen-events.json](/D:/Projects/YtbSongTracker/data/listen-events.json) after the first successful POST.
+Stored events are written to [listen-events.json](/D:/Projects/YtbSongTracker/data/listen-events.json) only when you use the private sync/import routes.
+Spotify verification results are cached in [spotify-cache.json](/D:/Projects/YtbSongTracker/data/spotify-cache.json) so repeated lookups for the same song candidate do not keep hitting the Spotify API.
 Classifier labels are stored in [classifier-labels.json](/D:/Projects/YtbSongTracker/data/classifier-labels.json), and the trained model is stored in [classifier-model.json](/D:/Projects/YtbSongTracker/data/classifier-model.json).
 Automatically collected label candidates are stored in [classifier-candidates.json](/D:/Projects/YtbSongTracker/data/classifier-candidates.json).
 
-`GET /api/stats/top-songs` currently groups by:
+The intended architecture is now:
+
+- local IndexedDB in the extension remains the primary source of truth for every user
+- `POST /api/enrich/listen` can classify/enrich a listen event without persisting raw listen history
+- `POST /api/me/listens` is the private route you can point only your own extension at when you want your personal website to have a hosted copy of your listens
+- `GET /api/public/top-songs` is the website-friendly read-only endpoint for your own site
+
+`GET /api/stats/top-songs` currently:
+
+- defaults to the current month
+- returns the top 30 songs across all tracked sources
+- includes a summary block with source breakdown and total listening time
+- groups by:
 
 - verified Spotify track when matched
 - otherwise `normalizedArtist + normalizedTitle` when available
 - otherwise raw-title fallback when no artist was parsed
+
+`POST /api/import/listens` accepts JSON listen-history arrays and currently normalizes:
+
+- Spotify extended streaming history exports with fields like `ts`, `ms_played`, and `master_metadata_track_name`
+- older Spotify streaming history exports with fields like `endTime`, `artistName`, `trackName`, and `msPlayed`
+
+Imported listens are merged into the same unified event store as YouTube listens, then deduped by a stable event fingerprint.
 
 When Spotify credentials are configured, the backend now:
 

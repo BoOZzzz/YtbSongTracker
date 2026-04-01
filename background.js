@@ -1,7 +1,8 @@
-importScripts("parser.js");
+importScripts("parser.js", "tracker-storage.js");
 
 const DEFAULT_SETTINGS = {
   backendUrl: "",
+  syncBackendUrl: "",
   apiKey: "",
   listenThresholdSec: 30,
   minProgressPercent: 0.5,
@@ -50,6 +51,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "GET_TOP_SONGS") {
+    handleGetTopSongs(message.payload)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "GET_LISTEN_HISTORY") {
+    handleGetListenHistory(message.payload)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "GET_TOP_VIDEOS") {
+    handleGetTopVideos(message.payload)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "IMPORT_LISTEN_HISTORY") {
+    importListenHistory(message.payload)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "UPDATE_CLASSIFICATION_OVERRIDE") {
+    updateClassificationOverride(message.payload)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   return false;
 });
 
@@ -60,6 +96,7 @@ async function handleListenEvent(payload, sender) {
     source: payload.sourcePage,
     sourcePage: payload.sourcePage,
     sourceType: payload.sourcePage.includes("music") ? "youtube_music" : "youtube",
+    sessionId: payload.sessionId,
     videoId: payload.videoId,
     videoUrl: payload.videoUrl,
     pageUrl: sender?.tab?.url || payload.videoUrl,
@@ -79,63 +116,53 @@ async function handleListenEvent(payload, sender) {
     capturedAt: new Date().toISOString()
   };
 
-  if (!settings.backendUrl) {
-    await appendToQueue({
-      status: "pending_config",
-      listenEvent
-    });
-    logDebug(settings, "Queued event because backend URL is missing", {
-      videoId: listenEvent.videoId,
-      status: "pending_config"
-    });
-    return { queued: true, reason: "Missing backendUrl" };
-  }
-
-  const response = await fetch(settings.backendUrl, {
-    method: "POST",
-    headers: buildHeaders(settings),
-    body: JSON.stringify(listenEvent)
+  const responseBody = await enrichWithBackendLookup(settings, listenEvent);
+  const record = SongTrackerStorage.createListenRecord({
+    ...listenEvent,
+    normalizedTitle: responseBody?.spotifyMatch?.title || listenEvent.normalizedTitle,
+    normalizedArtist: responseBody?.spotifyMatch?.artist || listenEvent.normalizedArtist,
+    canonicalKey: buildCanonicalKey(
+      responseBody?.spotifyMatch?.artist || listenEvent.normalizedArtist,
+      responseBody?.spotifyMatch?.title || listenEvent.normalizedTitle || listenEvent.rawTitle
+    ),
+    matchStatus: responseBody?.matchStatus || (responseBody?.spotifyMatch ? "spotify_matched" : (listenEvent.normalizedArtist ? "parsed" : "unresolved")),
+    spotifyVerificationStatus: responseBody?.spotifyVerificationStatus || responseBody?.status || (settings.backendUrl ? "not_checked" : "backend_unconfigured"),
+    spotifyCandidates: responseBody?.spotifyCandidates || responseBody?.candidates || [],
+    spotifyQueries: responseBody?.spotifyQueries || responseBody?.queries || [],
+    spotifyMatch: responseBody?.spotifyMatch || responseBody?.match || null,
+    spotifyTrackId: responseBody?.spotifyMatch?.id || responseBody?.match?.id || "",
+    spotifyTrackUri: responseBody?.spotifyMatch?.uri || responseBody?.match?.uri || "",
+    spotifyExternalUrl: responseBody?.spotifyMatch?.externalUrl || responseBody?.match?.externalUrl || "",
+    classifierPrediction: responseBody?.classifierPrediction || null,
+    finalClassification: responseBody?.finalClassification || ((responseBody?.spotifyMatch || responseBody?.match || listenEvent.isLikelyMusic) ? "song" : "video"),
+    finalConfidence: responseBody?.finalConfidence ?? responseBody?.spotifyMatch?.score ?? listenEvent.confidence
   });
-
-  let responseBody = null;
-  try {
-    responseBody = await response.json();
-  } catch (error) {
-    responseBody = null;
-  }
-
-  if (!response.ok) {
-    await appendToQueue({
-      status: "delivery_failed",
-      listenEvent,
-      responseStatus: response.status
-    });
-    logDebug(settings, "Backend rejected listen event", {
-      videoId: listenEvent.videoId,
-      responseStatus: response.status
-    });
-    throw new Error(`Backend responded with ${response.status}`);
-  }
+  const stored = await SongTrackerStorage.putListen(record);
+  const syncResult = await syncPrivateListenRecord(settings, stored.record);
 
   logDebug(settings, "Delivered listen event", {
     videoId: listenEvent.videoId,
-    backendUrl: settings.backendUrl,
+    backendUrl: settings.backendUrl || "",
+    syncBackendUrl: settings.syncBackendUrl || "",
     parserClassification: listenEvent.isLikelyMusic ? "song" : "video",
     parserConfidence: listenEvent.confidence,
-    variantType: responseBody?.variantType || listenEvent.variantType || "",
-    finalClassification: responseBody?.finalClassification || (listenEvent.isLikelyMusic ? "song" : "video"),
-    finalConfidence: responseBody?.finalConfidence ?? listenEvent.confidence,
-    matchStatus: responseBody?.matchStatus || "unknown",
-    spotifyVerificationStatus: responseBody?.spotifyVerificationStatus || "unknown",
-    spotifyQueries: responseBody?.spotifyQueries || [],
-    spotifyMatch: responseBody?.spotifyMatch || null
+    variantType: listenEvent.variantType || "",
+    finalClassification: stored.record.finalClassification || (listenEvent.isLikelyMusic ? "song" : "video"),
+    finalConfidence: stored.record.finalConfidence ?? listenEvent.confidence,
+    matchStatus: stored.record.matchStatus || "unknown",
+    spotifyVerificationStatus: stored.record.spotifyVerificationStatus || "unknown",
+    spotifyQueries: stored.record.spotifyQueries || [],
+    spotifyMatch: stored.record.spotifyMatch || null,
+    syncResult
   });
 
   return {
-    delivered: true,
+    stored: true,
+    inserted: stored.inserted,
+    synced: syncResult.synced,
     confidence: parsed.confidence,
-    finalClassification: responseBody?.finalClassification || (listenEvent.isLikelyMusic ? "song" : "video"),
-    finalConfidence: responseBody?.finalConfidence ?? parsed.confidence
+    finalClassification: stored.record.finalClassification || (listenEvent.isLikelyMusic ? "song" : "video"),
+    finalConfidence: stored.record.finalConfidence ?? parsed.confidence
   };
 }
 
@@ -185,6 +212,59 @@ async function handleClassifierCandidate(payload, sender) {
   }
 
   return { collected: true };
+}
+
+async function handleGetTopSongs(payload) {
+  const monthKey = normalizeMonthKey(payload?.month);
+  return SongTrackerStorage.getTopSongs({
+    limit: Number(payload?.limit || 30),
+    minConfidence: Number(payload?.minConfidence ?? 0.55),
+    monthKey
+  });
+}
+
+async function handleGetListenHistory(payload) {
+  const history = await SongTrackerStorage.getListenHistory({
+    monthKey: payload?.month || ""
+  });
+
+  return {
+    items: history
+  };
+}
+
+async function handleGetTopVideos(payload) {
+  const monthKey = normalizeMonthKey(payload?.month);
+  return SongTrackerStorage.getTopVideos({
+    monthKey,
+    minConfidence: Number(payload?.minConfidence ?? 0.55)
+  });
+}
+
+async function importListenHistory(payload) {
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  if (!items.length) {
+    throw new Error("Import payload must include a non-empty items array");
+  }
+
+  const normalized = items
+    .map((item) => normalizeImportedListen(item, {
+      source: payload?.source || "spotify",
+      fileName: payload?.fileName || ""
+    }))
+    .filter(Boolean);
+
+  return SongTrackerStorage.bulkImport(normalized, {
+    source: payload?.source || "spotify",
+    fileName: payload?.fileName || ""
+  });
+}
+
+async function updateClassificationOverride(payload) {
+  return SongTrackerStorage.updateClassificationOverride({
+    groupKey: payload?.groupKey,
+    classification: payload?.classification
+  });
 }
 
 async function isBackendHealthy(settings) {
@@ -237,8 +317,22 @@ function buildHeaders(settings) {
 }
 
 function buildCandidateCollectionUrl(listensEndpoint) {
-  const url = new URL(listensEndpoint);
+  const url = new URL(getBackendBaseUrl(listensEndpoint));
   url.pathname = "/api/classifier/candidates/collect";
+  url.search = "";
+  return url.toString();
+}
+
+function buildEnrichmentUrl(backendEndpoint) {
+  const url = new URL(getBackendBaseUrl(backendEndpoint));
+  url.pathname = "/api/enrich/listen";
+  url.search = "";
+  return url.toString();
+}
+
+function buildPrivateSyncUrl(syncEndpoint) {
+  const url = new URL(getBackendBaseUrl(syncEndpoint));
+  url.pathname = "/api/me/listens";
   url.search = "";
   return url.toString();
 }
@@ -253,6 +347,192 @@ function getBackendBaseUrl(listensEndpoint) {
   } catch (error) {
     return "";
   }
+}
+
+async function enrichWithBackendLookup(settings, listenEvent) {
+  if (!settings.backendUrl) {
+    return null;
+  }
+
+  const backendHealthy = await isBackendHealthy(settings);
+  if (!backendHealthy) {
+    return null;
+  }
+
+  const lookupUrl = buildEnrichmentUrl(settings.backendUrl);
+
+  try {
+    const response = await fetch(lookupUrl, {
+      method: "POST",
+      headers: buildHeaders(settings),
+      body: JSON.stringify(listenEvent)
+    });
+    if (!response.ok) {
+      return null;
+    }
+
+    const payload = await response.json();
+    return payload?.result || null;
+  } catch (error) {
+    logDebug(settings, "Listen enrichment failed", {
+      videoId: listenEvent.videoId,
+      message: error.message
+    });
+    return null;
+  }
+}
+
+async function syncPrivateListenRecord(settings, record) {
+  if (!settings.syncBackendUrl) {
+    return { synced: false, reason: "sync_unconfigured" };
+  }
+
+  const backendHealthy = await isBackendHealthy({
+    ...settings,
+    backendUrl: settings.syncBackendUrl
+  });
+  if (!backendHealthy) {
+    await appendToQueue({
+      type: "private_listen_sync",
+      syncBackendUrl: settings.syncBackendUrl,
+      record
+    });
+    return { synced: false, reason: "backend_unavailable" };
+  }
+
+  try {
+    const response = await fetch(buildPrivateSyncUrl(settings.syncBackendUrl), {
+      method: "POST",
+      headers: buildHeaders(settings),
+      body: JSON.stringify(record)
+    });
+
+    if (!response.ok) {
+      await appendToQueue({
+        type: "private_listen_sync",
+        syncBackendUrl: settings.syncBackendUrl,
+        record,
+        status: response.status
+      });
+      return { synced: false, reason: `http_${response.status}` };
+    }
+
+    return { synced: true };
+  } catch (error) {
+    await appendToQueue({
+      type: "private_listen_sync",
+      syncBackendUrl: settings.syncBackendUrl,
+      record,
+      error: error.message
+    });
+    return { synced: false, reason: "network_error" };
+  }
+}
+
+function normalizeMonthKey(value) {
+  const month = String(value || "").trim();
+  return /^\d{4}-\d{2}$/.test(month) ? month : getCurrentLocalMonthKey();
+}
+
+function buildCanonicalKey(artist, title) {
+  const normalizedArtist = slugify(artist);
+  const normalizedTitle = slugify(title);
+  if (!normalizedTitle) return "";
+  return normalizedArtist ? `${normalizedArtist}::${normalizedTitle}` : normalizedTitle;
+}
+
+function slugify(value) {
+  return String(value || "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function normalizeImportedListen(item, context) {
+  if (!item || typeof item !== "object") return null;
+
+  const spotifyExtendedTitle = normalizeWhitespace(item.master_metadata_track_name);
+  const spotifyExtendedArtist = normalizeWhitespace(item.master_metadata_album_artist_name);
+  const spotifyLegacyTitle = normalizeWhitespace(item.trackName);
+  const spotifyLegacyArtist = normalizeWhitespace(item.artistName);
+  const title = spotifyExtendedTitle || spotifyLegacyTitle;
+  const artist = spotifyExtendedArtist || spotifyLegacyArtist;
+  const listenedMs = Number(item.ms_played ?? item.msPlayed ?? 0);
+  const capturedAt = normalizeImportedTimestamp(item);
+
+  if (!title || !capturedAt || listenedMs <= 0) {
+    return null;
+  }
+
+  const spotifyTrackUri = normalizeWhitespace(item.spotify_track_uri || item.spotifyTrackUri || "");
+  const spotifyTrackId = spotifyTrackUri.startsWith("spotify:track:") ? spotifyTrackUri.slice("spotify:track:".length) : "";
+
+  return {
+    source: "spotify_import",
+    sourceType: "spotify_import",
+    rawTitle: title,
+    rawChannelName: artist,
+    rawDescription: "",
+    parserTitle: title,
+    parserArtist: artist,
+    normalizedTitle: title,
+    normalizedArtist: artist,
+    confidence: 1,
+    isLikelyMusic: true,
+    parsingStrategy: "imported_json",
+    variantType: "",
+    listenedSeconds: Math.max(1, Math.round(listenedMs / 1000)),
+    durationSeconds: 0,
+    progressPercent: 0,
+    thresholdSeconds: 0,
+    capturedAt,
+    canonicalKey: spotifyTrackUri || buildCanonicalKey(artist, title),
+    matchStatus: spotifyTrackUri ? "spotify_imported" : "imported",
+    spotifyVerificationStatus: "imported",
+    spotifyCandidates: [],
+    spotifyQueries: [],
+    spotifyMatch: spotifyTrackUri
+      ? {
+          id: spotifyTrackId,
+          uri: spotifyTrackUri,
+          title,
+          artist,
+          album: normalizeWhitespace(item.master_metadata_album_album_name || item.albumName || ""),
+          externalUrl: spotifyTrackId ? `https://open.spotify.com/track/${spotifyTrackId}` : ""
+        }
+      : null,
+    spotifyTrackId,
+    spotifyTrackUri,
+    spotifyExternalUrl: spotifyTrackId ? `https://open.spotify.com/track/${spotifyTrackId}` : "",
+    classifierPrediction: null,
+    finalClassification: "song",
+    finalConfidence: 1,
+    isImported: true,
+    importSource: context.source,
+    importFileName: context.fileName
+  };
+}
+
+function normalizeImportedTimestamp(item) {
+  const timestamp = normalizeWhitespace(item.ts || item.endTime || item.playedAt || item.capturedAt || "");
+  if (!timestamp) return "";
+
+  if (item.endTime && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(item.endTime)) {
+    return new Date(`${item.endTime}:00Z`).toISOString();
+  }
+
+  const parsed = new Date(timestamp);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
+}
+
+function normalizeWhitespace(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function getCurrentLocalMonthKey() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
 async function appendToQueue(entry) {

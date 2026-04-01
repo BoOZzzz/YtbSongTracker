@@ -1,6 +1,7 @@
 (function () {
   const state = {
     currentVideoId: null,
+    currentSessionId: "",
     currentVideoChangedAt: 0,
     milestoneSent: false,
     candidateSent: false,
@@ -12,7 +13,8 @@
     observedVideoElement: null,
     thresholdSkipLogged: false,
     lastMetadataSnapshotKey: "",
-    stableMetadataReads: 0
+    stableMetadataReads: 0,
+    lastReportedSeconds: 0
   };
 
   init().catch((error) => {
@@ -56,6 +58,7 @@
     if (videoId !== state.currentVideoId) {
       log("Tracking new video", { videoId, url: location.href });
       state.currentVideoId = videoId;
+      state.currentSessionId = videoId ? `${videoId}:${Date.now()}` : "";
       state.currentVideoChangedAt = Date.now();
       state.milestoneSent = false;
       state.candidateSent = false;
@@ -64,6 +67,7 @@
       state.thresholdSkipLogged = false;
       state.lastMetadataSnapshotKey = "";
       state.stableMetadataReads = 0;
+      state.lastReportedSeconds = 0;
     }
 
     attachPlayerListeners();
@@ -85,12 +89,12 @@
       }
     }
 
-    if (state.milestoneSent) {
-      return;
-    }
-
     if (player.ended) {
-      logSkip("Player already ended");
+      if (state.milestoneSent) {
+        void reportListenProgress(player, "ended");
+      } else {
+        logSkip("Player already ended");
+      }
       return;
     }
 
@@ -138,26 +142,7 @@
       return;
     }
 
-    state.milestoneSent = true;
-
-    chrome.runtime.sendMessage({
-      type: "TRACK_LISTEN_EVENT",
-      payload: {
-        ...metadata,
-        sourcePage: location.hostname,
-        videoId: state.currentVideoId,
-        videoUrl: location.href,
-        listenedSeconds,
-        durationSeconds: Math.round(player.duration),
-        progressPercent: Number(progressPercent.toFixed(3))
-      }
-    });
-
-    log("Sent listen event", {
-      videoId: state.currentVideoId,
-      listenedSeconds,
-      progressPercent
-    });
+    void reportListenProgress(player, state.milestoneSent ? "progress" : "threshold", metadata);
   }
 
   function scheduleClassifierCandidateCollection(delayMs = 1200) {
@@ -252,9 +237,53 @@
     player.addEventListener("durationchange", resetForCurrentVideo);
     player.addEventListener("loadeddata", () => scheduleClassifierCandidateCollection(500));
     player.addEventListener("playing", checkPlaybackProgress);
-    player.addEventListener("pause", checkPlaybackProgress);
+    player.addEventListener("pause", () => {
+      checkPlaybackProgress();
+      void reportListenProgress(player, "pause");
+    });
     player.addEventListener("timeupdate", checkPlaybackProgress);
+    player.addEventListener("ended", () => {
+      void reportListenProgress(player, "ended");
+    });
     log("Attached player listeners");
+  }
+
+  async function reportListenProgress(player, reason, metadataOverride) {
+    if (!player || !state.currentVideoId || !state.currentSessionId) return;
+    if (!Number.isFinite(player.duration) || player.duration <= 0) return;
+
+    const listenedSeconds = Math.floor(player.currentTime);
+    if (reason === "progress" && listenedSeconds <= state.lastReportedSeconds + 9) {
+      return;
+    }
+
+    const metadata = metadataOverride || getMetadata();
+    if (!isMetadataReady(metadata)) return;
+    if (!isMetadataStable(metadata)) return;
+
+    state.milestoneSent = true;
+    state.lastReportedSeconds = Math.max(state.lastReportedSeconds, listenedSeconds);
+
+    chrome.runtime.sendMessage({
+      type: "TRACK_LISTEN_EVENT",
+      payload: {
+        ...metadata,
+        sessionId: state.currentSessionId,
+        sourcePage: location.hostname,
+        videoId: state.currentVideoId,
+        videoUrl: location.href,
+        listenedSeconds: state.lastReportedSeconds,
+        durationSeconds: Math.round(player.duration),
+        progressPercent: Number((player.currentTime / player.duration).toFixed(3))
+      }
+    });
+
+    log("Sent listen event", {
+      videoId: state.currentVideoId,
+      sessionId: state.currentSessionId,
+      listenedSeconds: state.lastReportedSeconds,
+      reason
+    });
   }
 
   function getMetadata() {

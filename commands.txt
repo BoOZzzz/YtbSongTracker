@@ -32,6 +32,8 @@ npm run rate-test -- --rps 2 --duration 30
 
 Useful API endpoints:
 GET http://localhost:3000/health
+GET http://localhost:3000/api/stats/top-songs?month=2026-03&limit=30
+POST http://localhost:3000/api/import/listens
 GET http://localhost:3000/api/classifier/status
 GET http://localhost:3000/api/classifier/labels?limit=50
 GET http://localhost:3000/api/classifier/candidates?status=pending_label&limit=50
@@ -41,6 +43,7 @@ POST http://localhost:3000/api/classifier/batches/next
 Recommended workflow:
 1. npm start
 2. Browse YouTube with the reloaded extension
-3. npm run label:batch -- --limit 20
-4. Label the generated JSON with song, video, or uncertain
-5. npm run label:import -- --file D:\Projects\YtbSongTracker\data\your-batch-file.json
+3. Open the extension options page to review monthly top songs or import listened-history JSON
+4. npm run label:batch -- --limit 20
+5. Label the generated JSON with song, video, or uncertain
+6. npm run label:import -- --file D:\Projects\YtbSongTracker\data\your-batch-file.json

@@ -5,7 +5,7 @@
     "description":  "YouTube listen tracker extension plus local backend.",
     "scripts":  {
                     "start":  "node server.js",
-                    "check":  "node --check server.js \u0026\u0026 node --check background.js \u0026\u0026 node --check content.js \u0026\u0026 node --check options.js \u0026\u0026 node --check parser.js \u0026\u0026 node --check classifier.js \u0026\u0026 node --check spotify.js \u0026\u0026 node --check scripts/train-classifier.js \u0026\u0026 node --check scripts/rate-test.js \u0026\u0026 node --check scripts/generate-label-batch.js \u0026\u0026 node --check scripts/import-labeled-batch.js \u0026\u0026 node --check scripts/backfill-candidates.js",
+                    "check":  "node --check server.js \u0026\u0026 node --check background.js \u0026\u0026 node --check content.js \u0026\u0026 node --check options.js \u0026\u0026 node --check parser.js \u0026\u0026 node --check tracker-storage.js \u0026\u0026 node --check classifier.js \u0026\u0026 node --check spotify.js \u0026\u0026 node --check scripts/train-classifier.js \u0026\u0026 node --check scripts/rate-test.js \u0026\u0026 node --check scripts/generate-label-batch.js \u0026\u0026 node --check scripts/import-labeled-batch.js \u0026\u0026 node --check scripts/backfill-candidates.js",
                     "train:classifier":  "node scripts/train-classifier.js",
                     "rate-test":  "node scripts/rate-test.js",
                     "label:batch":  "node scripts/generate-label-batch.js",

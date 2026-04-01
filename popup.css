@@ -1,0 +1,134 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", Tahoma, sans-serif;
+  color: #1f2933;
+  background: linear-gradient(160deg, #f8f6f1 0%, #dbe8f1 100%);
+}
+
+.popup {
+  width: 440px;
+  min-height: 420px;
+  padding: 18px;
+}
+
+.popup-header {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: start;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #1d4ed8;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.ghost-button {
+  border: 0;
+  border-radius: 999px;
+  padding: 10px 14px;
+  font: inherit;
+  font-weight: 700;
+  color: #1d4ed8;
+  background: rgba(29, 78, 216, 0.1);
+  cursor: pointer;
+}
+
+.popup-status {
+  min-height: 22px;
+  margin: 14px 0 0;
+  color: #52606d;
+  font-weight: 600;
+}
+
+.popup-table {
+  margin-top: 12px;
+  border-radius: 18px;
+  overflow: hidden;
+  background: rgba(221, 230, 239, 0.38);
+}
+
+.popup-table-head,
+.popup-row {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 2fr) minmax(0, 1.25fr) 56px;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+}
+
+.popup-table-head {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #52606d;
+  background: rgba(255, 255, 255, 0.56);
+}
+
+.popup-rank {
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.popup-table-body {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+}
+
+.popup-row {
+  background: rgba(255, 255, 255, 0.76);
+  border-top: 1px solid rgba(188, 204, 220, 0.5);
+}
+
+.popup-row:first-child {
+  border-top: 0;
+}
+
+.popup-title,
+.popup-artist {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.popup-title {
+  font-weight: 700;
+  color: #1f2933;
+  text-decoration: none;
+}
+
+.popup-title:hover,
+.popup-title:focus-visible {
+  text-decoration: underline;
+}
+
+.popup-artist {
+  color: #52606d;
+}
+
+.popup-plays {
+  color: #52606d;
+}
+
+.popup-empty {
+  padding: 18px;
+  background: rgba(255, 255, 255, 0.76);
+  color: #52606d;
+}

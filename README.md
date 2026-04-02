@@ -228,6 +228,14 @@ Seed the candidate pool from your existing stored listen history:
 npm run label:backfill
 ```
 
+Or do the seed + batch export in one step:
+
+```powershell
+npm run label:history-batch -- --limit 50
+```
+
+This reads `data/listen-events.json`, merges matching items into `classifier-candidates.json`, and immediately writes a label-ready batch JSON file into `data/`.
+
 This writes a new JSON file into [data](/D:/Projects/YtbSongTracker/data). Fill each `label` field with:
 
 - `song`

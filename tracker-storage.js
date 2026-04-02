@@ -45,11 +45,13 @@
       const transaction = db.transaction(storeName, mode);
       const store = transaction.objectStore(storeName);
       let settled = false;
+      let pendingValue;
+      let handlerFinished = false;
 
       transaction.oncomplete = () => {
         if (!settled) {
           settled = true;
-          resolve(undefined);
+          resolve(pendingValue);
         }
         db.close();
       };
@@ -70,10 +72,8 @@
 
       Promise.resolve(handler(store, transaction))
         .then((value) => {
-          if (!settled) {
-            settled = true;
-            resolve(value);
-          }
+          pendingValue = value;
+          handlerFinished = true;
         })
         .catch((error) => {
           if (!settled) {
@@ -145,6 +145,116 @@
     return fields.join("||");
   }
 
+  function buildGroupKeys(record, classificationOverride) {
+    const classification = normalizeWhitespace(classificationOverride || decideClassification(record));
+    const normalizedTitleKey = buildCanonicalKey(record.normalizedArtist, record.normalizedTitle || record.rawTitle || "");
+    const rawTitleKey = buildCanonicalKey("", record.rawTitle || record.normalizedTitle || "");
+    const keys = new Set();
+
+    if (record.videoId) {
+      keys.add(record.videoId);
+    }
+
+    if (classification === "song") {
+      if (record.canonicalKey) keys.add(record.canonicalKey);
+      if (normalizedTitleKey) keys.add(normalizedTitleKey);
+      if (rawTitleKey) keys.add(rawTitleKey);
+    } else {
+      if (record.videoId) keys.add(record.videoId);
+      if (record.canonicalKey) keys.add(record.canonicalKey);
+      if (normalizedTitleKey) keys.add(normalizedTitleKey);
+      if (rawTitleKey) keys.add(rawTitleKey);
+    }
+
+    return Array.from(keys).filter(Boolean);
+  }
+
+  function inheritsManualClassification(candidate, items) {
+    const candidateKeys = new Set([
+      ...buildGroupKeys(candidate, "song"),
+      ...buildGroupKeys(candidate, "video")
+    ]);
+
+    for (const item of items) {
+      const manualClassification = normalizeWhitespace(item.manualClassification || "");
+      if (!manualClassification) continue;
+
+      const itemKeys = buildGroupKeys(item, manualClassification);
+      if (itemKeys.some((key) => candidateKeys.has(key))) {
+        return {
+          classification: manualClassification,
+          updatedAt: item.manualClassificationAt || item.storedAt || ""
+        };
+      }
+    }
+
+    return null;
+  }
+
+  function inheritsExistingClassification(candidate, items) {
+    const candidateKeys = new Set([
+      ...buildGroupKeys(candidate, "song"),
+      ...buildGroupKeys(candidate, "video")
+    ]);
+
+    let bestMatch = null;
+
+    for (const item of items) {
+      const itemClassification = normalizeWhitespace(decideClassification(item));
+      if (!itemClassification) continue;
+
+      const itemKeys = buildGroupKeys(item, itemClassification);
+      if (!itemKeys.some((key) => candidateKeys.has(key))) continue;
+
+      const candidateMatch = {
+        classification: itemClassification,
+        confidence: Number(item.finalConfidence ?? item.confidence ?? 0),
+        updatedAt: item.manualClassificationAt || item.storedAt || item.capturedAt || "",
+        isManual: Boolean(normalizeWhitespace(item.manualClassification || ""))
+      };
+
+      if (!bestMatch) {
+        bestMatch = candidateMatch;
+        continue;
+      }
+
+      if (candidateMatch.isManual && !bestMatch.isManual) {
+        bestMatch = candidateMatch;
+        continue;
+      }
+
+      if (candidateMatch.isManual === bestMatch.isManual && candidateMatch.confidence > bestMatch.confidence) {
+        bestMatch = candidateMatch;
+        continue;
+      }
+
+      if (
+        candidateMatch.isManual === bestMatch.isManual &&
+        candidateMatch.confidence === bestMatch.confidence &&
+        candidateMatch.updatedAt > bestMatch.updatedAt
+      ) {
+        bestMatch = candidateMatch;
+      }
+    }
+
+    return bestMatch;
+  }
+
+  function resolveAggregateKey(record, aggregateKeyMap) {
+    const classification = decideClassification(record);
+    const preferredKeys = buildGroupKeys(record, classification);
+    const alternateKeys = buildGroupKeys(record, classification === "song" ? "video" : "song");
+    const allKeys = [...preferredKeys, ...alternateKeys];
+
+    for (const key of allKeys) {
+      if (aggregateKeyMap.has(key)) {
+        return aggregateKeyMap.get(key);
+      }
+    }
+
+    return preferredKeys[0] || alternateKeys[0] || "";
+  }
+
   function decideClassification(record) {
     return record.finalClassification || (record.isLikelyMusic ? "song" : "video");
   }
@@ -196,6 +306,8 @@
       classifierPrediction: input.classifierPrediction || null,
       finalClassification: normalizeWhitespace(input.finalClassification || ""),
       finalConfidence: Number(input.finalConfidence ?? input.confidence ?? 0),
+      manualClassification: normalizeWhitespace(input.manualClassification || ""),
+      manualClassificationAt: normalizeIsoDate(input.manualClassificationAt || input.storedAt || Date.now(), Date.now()),
       isImported: Boolean(input.isImported),
       importSource: normalizeWhitespace(input.importSource || ""),
       importFileName: normalizeWhitespace(input.importFileName || ""),
@@ -216,6 +328,7 @@
         const merged = createListenRecord({
           ...existing,
           ...normalized,
+          id: existing.id,
           listenedSeconds: Math.max(Number(existing.listenedSeconds || 0), Number(normalized.listenedSeconds || 0)),
           durationSeconds: Math.max(Number(existing.durationSeconds || 0), Number(normalized.durationSeconds || 0)),
           progressPercent: Math.max(Number(existing.progressPercent || 0), Number(normalized.progressPercent || 0)),
@@ -238,8 +351,32 @@
         return { inserted: false, record: merged };
       }
 
-      store.put(normalized);
-      return { inserted: true, record: normalized };
+      const allItems = await requestToPromise(store.getAll());
+      const inheritedOverride = inheritsManualClassification(normalized, allItems);
+      const inheritedClassification = inheritedOverride || inheritsExistingClassification(normalized, allItems);
+      const finalRecord = inheritedOverride
+        ? createListenRecord({
+            ...normalized,
+            finalClassification: inheritedOverride.classification,
+            finalConfidence: Math.max(Number(normalized.finalConfidence || 0), 1),
+            manualClassification: inheritedOverride.classification,
+            manualClassificationAt: inheritedOverride.updatedAt || new Date().toISOString(),
+            storedAt: new Date().toISOString()
+          })
+        : inheritedClassification
+          ? createListenRecord({
+              ...normalized,
+              finalClassification: inheritedClassification.classification,
+              finalConfidence: Math.max(
+                Number(normalized.finalConfidence || 0),
+                Number(inheritedClassification.confidence || 0)
+              ),
+              storedAt: new Date().toISOString()
+            })
+        : normalized;
+
+      store.put(finalRecord);
+      return { inserted: true, record: finalRecord };
     });
   }
 
@@ -308,6 +445,18 @@
     const classificationFilter = normalizeWhitespace(options.classification || "");
     const excludeClassification = normalizeWhitespace(options.excludeClassification || "");
     const filtered = filterEventsByMonth(events, options.monthKey);
+    const songKeys = new Set();
+
+    for (const event of filtered) {
+      const classification = decideClassification(event);
+      const confidence = decideConfidence(event);
+      if (classification !== "song") continue;
+      if (confidence < Number(options.minConfidence ?? 0.55)) continue;
+
+      for (const key of buildGroupKeys(event, "song")) {
+        songKeys.add(key);
+      }
+    }
 
     for (const event of filtered) {
       const classification = decideClassification(event);
@@ -316,9 +465,15 @@
       if (excludeClassification && classification === excludeClassification) continue;
       if (!excludeClassification && confidence < Number(options.minConfidence ?? 0.55)) continue;
 
+      if (excludeClassification === "song") {
+        const overlapsSong = buildGroupKeys(event, "video").some((key) => songKeys.has(key))
+          || buildGroupKeys(event, "song").some((key) => songKeys.has(key));
+        if (overlapsSong) continue;
+      }
+
       const key = classification === "song"
-        ? (event.canonicalKey || buildCanonicalKey(event.normalizedArtist, event.normalizedTitle))
-        : (event.videoId || event.canonicalKey || buildCanonicalKey("", event.rawTitle || event.normalizedTitle));
+        ? buildGroupKeys(event, "song")[0]
+        : buildGroupKeys(event, "video")[0];
       if (!key) continue;
 
       const existing = byItem.get(key) || {
@@ -356,6 +511,7 @@
 
   function computeTopSongs(events, options) {
     const bySong = new Map();
+    const aggregateKeyMap = new Map();
     const minConfidence = Number(options.minConfidence ?? 0.55);
     const filtered = filterEventsByMonth(events, options.monthKey);
     const summary = {
@@ -365,20 +521,15 @@
       sources: {}
     };
 
-    for (const event of filtered) {
-      const classification = decideClassification(event);
-      const confidence = decideConfidence(event);
-      if (classification !== "song" || confidence < minConfidence) continue;
-
-      const key = event.canonicalKey || buildCanonicalKey(event.normalizedArtist, event.normalizedTitle);
-      if (!key) continue;
+    function addEventToSongAggregate(event, groupingKey) {
+      if (!groupingKey) return;
 
       summary.totalTrackedEvents += 1;
       summary.totalListenedSeconds += Number(event.listenedSeconds || 0);
       summary.sources[event.sourceType || "unknown"] = (summary.sources[event.sourceType || "unknown"] || 0) + 1;
 
-      const existing = bySong.get(key) || {
-        canonicalKey: key,
+      const existing = bySong.get(groupingKey) || {
+        canonicalKey: groupingKey,
         title: event.normalizedTitle || event.rawTitle,
         artist: event.normalizedArtist || "",
         spotifyTrackId: event.spotifyTrackId || "",
@@ -402,7 +553,36 @@
         existing.samplePageUrl = event.pageUrl || event.videoUrl || "";
       }
       existing.sourceTypes[event.sourceType || "unknown"] = (existing.sourceTypes[event.sourceType || "unknown"] || 0) + 1;
-      bySong.set(key, existing);
+      bySong.set(groupingKey, existing);
+
+      for (const key of buildGroupKeys(event, "song")) {
+        aggregateKeyMap.set(key, groupingKey);
+      }
+      for (const key of buildGroupKeys(event, "video")) {
+        aggregateKeyMap.set(key, groupingKey);
+      }
+    }
+
+    for (const event of filtered) {
+      const classification = decideClassification(event);
+      const confidence = decideConfidence(event);
+      if (classification !== "song" || confidence < minConfidence) continue;
+
+      const groupingKey = resolveAggregateKey(event, aggregateKeyMap)
+        || event.canonicalKey
+        || buildCanonicalKey(event.normalizedArtist, event.normalizedTitle)
+        || buildGroupKeys(event, "song")[0];
+      addEventToSongAggregate(event, groupingKey);
+    }
+
+    for (const event of filtered) {
+      const classification = decideClassification(event);
+      if (classification === "song") continue;
+
+      const overlappingGroupKey = resolveAggregateKey(event, aggregateKeyMap);
+
+      if (!overlappingGroupKey) continue;
+      addEventToSongAggregate(event, overlappingGroupKey);
     }
 
     const items = Array.from(bySong.values())
@@ -454,12 +634,12 @@
       let updatedCount = 0;
 
       for (const item of items) {
-        const itemClassification = decideClassification(item);
-        const itemGroupKey = itemClassification === "song"
-          ? (item.canonicalKey || buildCanonicalKey(item.normalizedArtist, item.normalizedTitle))
-          : (item.videoId || item.canonicalKey || buildCanonicalKey("", item.rawTitle || item.normalizedTitle));
+        const itemKeys = [
+          ...buildGroupKeys(item, decideClassification(item)),
+          ...buildGroupKeys(item, targetClassification)
+        ];
 
-        if (itemGroupKey !== groupKey) continue;
+        if (!itemKeys.includes(groupKey)) continue;
 
         const updated = createListenRecord({
           ...item,

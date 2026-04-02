@@ -14,7 +14,11 @@
     thresholdSkipLogged: false,
     lastMetadataSnapshotKey: "",
     stableMetadataReads: 0,
-    lastReportedSeconds: 0
+    lastReportedSeconds: 0,
+    accumulatedListenSeconds: 0,
+    lastObservedPlayerTimeSec: null,
+    lastObservedWallTimeMs: 0,
+    lastReadyMetadata: null
   };
 
   init().catch((error) => {
@@ -28,6 +32,7 @@
     state.debug = Boolean(settings.debug);
 
     watchLocationChanges();
+    attachLifecycleListeners();
     window.setInterval(checkPlaybackProgress, 1000);
     resetForCurrentVideo();
     attachPlayerListeners();
@@ -39,6 +44,7 @@
     const observer = new MutationObserver(() => {
       if (location.href !== lastUrl) {
         lastUrl = location.href;
+        flushListenProgress("location_change");
         resetForCurrentVideo();
       }
     });
@@ -48,8 +54,30 @@
       subtree: true
     });
 
-    window.addEventListener("yt-navigate-finish", resetForCurrentVideo, true);
-    window.addEventListener("popstate", resetForCurrentVideo, true);
+    window.addEventListener("yt-navigate-finish", () => {
+      flushListenProgress("yt_navigate_finish");
+      resetForCurrentVideo();
+    }, true);
+    window.addEventListener("popstate", () => {
+      flushListenProgress("popstate");
+      resetForCurrentVideo();
+    }, true);
+  }
+
+  function attachLifecycleListeners() {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        flushListenProgress("visibility_hidden");
+      }
+    }, true);
+
+    window.addEventListener("pagehide", () => {
+      flushListenProgress("pagehide");
+    }, true);
+
+    window.addEventListener("beforeunload", () => {
+      flushListenProgress("beforeunload");
+    }, true);
   }
 
   function resetForCurrentVideo() {
@@ -68,6 +96,10 @@
       state.lastMetadataSnapshotKey = "";
       state.stableMetadataReads = 0;
       state.lastReportedSeconds = 0;
+      state.accumulatedListenSeconds = 0;
+      state.lastObservedPlayerTimeSec = null;
+      state.lastObservedWallTimeMs = 0;
+      state.lastReadyMetadata = null;
     }
 
     attachPlayerListeners();
@@ -103,25 +135,32 @@
       return;
     }
 
-    const listenedSeconds = Math.floor(player.currentTime);
-    const progressPercent = player.currentTime / player.duration;
-    const passedTimeThreshold = player.currentTime >= state.thresholdSec;
-    const passedProgressThreshold = progressPercent >= state.minProgressPercent;
+    updateAccumulatedListenSeconds(player);
 
-    if (player.paused && !passedTimeThreshold && !passedProgressThreshold) {
+    const listenedSeconds = getSessionListenedSeconds();
+    const progressPercent = player.currentTime / player.duration;
+    const requiredListenedSeconds = Math.min(
+      state.thresholdSec,
+      player.duration * state.minProgressPercent
+    );
+    const passedSessionThreshold = listenedSeconds >= requiredListenedSeconds;
+
+    if (player.paused && !passedSessionThreshold) {
       logSkip("Player is paused before threshold", {
         currentTime: Number(player.currentTime.toFixed(2)),
-        thresholdSec: state.thresholdSec
+        listenedSeconds,
+        requiredListenedSeconds: Number(requiredListenedSeconds.toFixed(2))
       });
       return;
     }
 
-    if (!passedTimeThreshold && !passedProgressThreshold) {
+    if (!passedSessionThreshold) {
       if (!state.thresholdSkipLogged) {
         state.thresholdSkipLogged = true;
         logSkip("Threshold not reached yet", {
           currentTime: Number(player.currentTime.toFixed(2)),
-          thresholdSec: state.thresholdSec,
+          listenedSeconds,
+          requiredListenedSeconds: Number(requiredListenedSeconds.toFixed(2)),
           progressPercent: Number(progressPercent.toFixed(3)),
           minProgressPercent: state.minProgressPercent
         });
@@ -130,6 +169,14 @@
     }
 
     state.thresholdSkipLogged = false;
+
+    if (state.milestoneSent && state.lastReadyMetadata) {
+      void reportListenProgress(player, "progress", state.lastReadyMetadata, {
+        allowUnstableMetadata: true,
+        allowCachedMetadata: true
+      });
+      return;
+    }
 
     const metadata = getMetadata();
     if (!isMetadataReady(metadata)) {
@@ -141,6 +188,8 @@
       logSkip("Metadata not stable yet for listen event");
       return;
     }
+
+    state.lastReadyMetadata = metadata;
 
     void reportListenProgress(player, state.milestoneSent ? "progress" : "threshold", metadata);
   }
@@ -233,33 +282,103 @@
     if (!player || player === state.observedVideoElement) return;
 
     state.observedVideoElement = player;
-    player.addEventListener("loadedmetadata", resetForCurrentVideo);
-    player.addEventListener("durationchange", resetForCurrentVideo);
+    player.addEventListener("loadedmetadata", () => {
+      flushListenProgress("loadedmetadata");
+      resetForCurrentVideo();
+    });
+    player.addEventListener("durationchange", () => {
+      flushListenProgress("durationchange");
+      resetForCurrentVideo();
+    });
     player.addEventListener("loadeddata", () => scheduleClassifierCandidateCollection(500));
-    player.addEventListener("playing", checkPlaybackProgress);
-    player.addEventListener("pause", () => {
+    player.addEventListener("playing", () => {
+      updateAccumulatedListenSeconds(player, { forceAnchorReset: true });
       checkPlaybackProgress();
-      void reportListenProgress(player, "pause");
+    });
+    player.addEventListener("pause", () => {
+      updateAccumulatedListenSeconds(player);
+      checkPlaybackProgress();
+      void reportListenProgress(player, "pause", null, { allowUnstableMetadata: true });
     });
     player.addEventListener("timeupdate", checkPlaybackProgress);
     player.addEventListener("ended", () => {
-      void reportListenProgress(player, "ended");
+      updateAccumulatedListenSeconds(player);
+      void reportListenProgress(player, "ended", null, { allowUnstableMetadata: true });
     });
     log("Attached player listeners");
   }
 
-  async function reportListenProgress(player, reason, metadataOverride) {
+  function updateAccumulatedListenSeconds(player, options = {}) {
+    if (!player || !Number.isFinite(player.currentTime)) return;
+
+    const currentPlayerTimeSec = Math.max(0, Number(player.currentTime || 0));
+    const nowMs = Date.now();
+
+    if (options.forceAnchorReset || state.lastObservedPlayerTimeSec == null) {
+      state.lastObservedPlayerTimeSec = currentPlayerTimeSec;
+      state.lastObservedWallTimeMs = nowMs;
+      return;
+    }
+
+    const previousPlayerTimeSec = state.lastObservedPlayerTimeSec;
+    const previousWallTimeMs = state.lastObservedWallTimeMs || nowMs;
+    const playerDeltaSec = currentPlayerTimeSec - previousPlayerTimeSec;
+    const wallDeltaSec = Math.max(0, (nowMs - previousWallTimeMs) / 1000);
+    const maxCredibleDeltaSec = wallDeltaSec + 1.25;
+
+    if (playerDeltaSec > 0) {
+      state.accumulatedListenSeconds += Math.min(playerDeltaSec, maxCredibleDeltaSec);
+    }
+
+    state.lastObservedPlayerTimeSec = currentPlayerTimeSec;
+    state.lastObservedWallTimeMs = nowMs;
+  }
+
+  function getSessionListenedSeconds() {
+    return Math.max(0, Math.floor(state.accumulatedListenSeconds));
+  }
+
+  function flushListenProgress(reason) {
+    const player = document.querySelector("video");
+    if (!player || !state.currentVideoId) return;
+    if (!Number.isFinite(player.duration) || player.duration <= 0) return;
+
+    updateAccumulatedListenSeconds(player);
+    const listenedSeconds = getSessionListenedSeconds();
+    const requiredListenedSeconds = Math.min(
+      state.thresholdSec,
+      player.duration * state.minProgressPercent
+    );
+    const passedSessionThreshold = listenedSeconds >= requiredListenedSeconds;
+
+    if (!state.milestoneSent && !passedSessionThreshold) {
+      return;
+    }
+
+    void reportListenProgress(player, reason, state.lastReadyMetadata, {
+      allowUnstableMetadata: true,
+      allowCachedMetadata: true
+    });
+  }
+
+  async function reportListenProgress(player, reason, metadataOverride, options = {}) {
     if (!player || !state.currentVideoId || !state.currentSessionId) return;
     if (!Number.isFinite(player.duration) || player.duration <= 0) return;
 
-    const listenedSeconds = Math.floor(player.currentTime);
+    updateAccumulatedListenSeconds(player);
+    const listenedSeconds = getSessionListenedSeconds();
     if (reason === "progress" && listenedSeconds <= state.lastReportedSeconds + 9) {
       return;
     }
 
-    const metadata = metadataOverride || getMetadata();
-    if (!isMetadataReady(metadata)) return;
-    if (!isMetadataStable(metadata)) return;
+    const metadata = metadataOverride || state.lastReadyMetadata || getMetadata();
+    if (!options.allowCachedMetadata && !isMetadataReady(metadata)) return;
+    if (options.allowCachedMetadata && !metadata) return;
+    const needsStableMetadata = !state.milestoneSent && !options.allowUnstableMetadata;
+    if (needsStableMetadata && !isMetadataStable(metadata)) return;
+    if (metadata) {
+      state.lastReadyMetadata = metadata;
+    }
 
     state.milestoneSent = true;
     state.lastReportedSeconds = Math.max(state.lastReportedSeconds, listenedSeconds);
@@ -276,6 +395,20 @@
         durationSeconds: Math.round(player.duration),
         progressPercent: Number((player.currentTime / player.duration).toFixed(3))
       }
+    });
+
+    log("Dispatching TRACK_LISTEN_EVENT", {
+      videoId: state.currentVideoId,
+      sessionId: state.currentSessionId,
+      reason,
+      currentTime: Number(player.currentTime.toFixed(3)),
+      accumulatedListenSeconds: Number(state.accumulatedListenSeconds.toFixed(3)),
+      lastObservedPlayerTimeSec: state.lastObservedPlayerTimeSec,
+      listenedSeconds,
+      previousReportedSeconds: state.lastReportedSeconds,
+      durationSeconds: Math.round(player.duration),
+      progressPercent: Number((player.currentTime / player.duration).toFixed(3)),
+      usedCachedMetadata: Boolean(metadataOverride || options.allowCachedMetadata)
     });
 
     log("Sent listen event", {

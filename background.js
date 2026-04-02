@@ -137,7 +137,27 @@ async function handleListenEvent(payload, sender) {
     finalClassification: responseBody?.finalClassification || ((responseBody?.spotifyMatch || responseBody?.match || listenEvent.isLikelyMusic) ? "song" : "video"),
     finalConfidence: responseBody?.finalConfidence ?? responseBody?.spotifyMatch?.score ?? listenEvent.confidence
   });
+  logDebug(settings, "Prepared listen record before IndexedDB merge", {
+    videoId: record.videoId,
+    sessionId: record.sessionId,
+    listenedSeconds: record.listenedSeconds,
+    durationSeconds: record.durationSeconds,
+    progressPercent: record.progressPercent,
+    eventFingerprint: record.eventFingerprint,
+    finalClassification: record.finalClassification,
+    matchStatus: record.matchStatus
+  });
   const stored = await SongTrackerStorage.putListen(record);
+  logDebug(settings, "IndexedDB merge result", {
+    videoId: stored.record.videoId,
+    sessionId: stored.record.sessionId,
+    inserted: stored.inserted,
+    listenedSeconds: stored.record.listenedSeconds,
+    durationSeconds: stored.record.durationSeconds,
+    progressPercent: stored.record.progressPercent,
+    eventFingerprint: stored.record.eventFingerprint,
+    finalClassification: stored.record.finalClassification
+  });
   const syncResult = await syncPrivateListenRecord(settings, stored.record);
 
   logDebug(settings, "Delivered listen event", {
